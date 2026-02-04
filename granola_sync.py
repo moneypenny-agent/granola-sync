@@ -180,17 +180,26 @@ class GranolaSync:
             return None
     
     @staticmethod
-    def transcript_to_text(transcript_data: Optional[Dict[str, Any]]) -> str:
+    def transcript_to_text(transcript_data) -> str:
         """Convert transcript JSON to readable text format"""
         if not transcript_data:
             return ""
         
-        segments = transcript_data.get("segments", [])
+        # Handle both formats: list of segments or dict with "segments" key
+        if isinstance(transcript_data, list):
+            segments = transcript_data
+        elif isinstance(transcript_data, dict):
+            segments = transcript_data.get("segments", [])
+        else:
+            return ""
+        
         if not segments:
             return ""
         
         lines = []
         for seg in segments:
+            if not isinstance(seg, dict):
+                continue
             speaker = seg.get("speaker", "Unknown")
             text = seg.get("text", "").strip()
             timestamp = seg.get("start", 0)
@@ -397,7 +406,7 @@ class GranolaSync:
                 
                 # Transcript data
                 "transcript": transcript_text,
-                "transcript_segments": len(transcript_data.get("segments", [])) if transcript_data else 0,
+                "transcript_segments": len(transcript_data) if isinstance(transcript_data, list) else len(transcript_data.get("segments", [])) if transcript_data else 0,
                 "transcript_raw": transcript_data,  # Full transcript data for advanced processing
                 
                 # Notes data

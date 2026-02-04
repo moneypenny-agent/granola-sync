@@ -364,7 +364,7 @@ class GranolaSync:
         # Process each document
         for doc in new_docs:
             doc_id = doc.get("id")
-            title = doc.get("title", "Untitled Meeting")
+            title = doc.get("title") or "Untitled Meeting"  # Handle None values
             created_at = doc.get("created_at", "")
             
             self.logger.info(f"Processing: {title[:60]}...")

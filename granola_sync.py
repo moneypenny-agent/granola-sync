@@ -24,7 +24,7 @@ from urllib3.util.retry import Retry
 
 from token_manager import TokenManager
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 # Configure logging
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> logging.Logger:

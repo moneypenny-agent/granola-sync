@@ -6,10 +6,13 @@ Granola is an AI meeting assistant that captures transcripts and generates notes
 
 ## Features
 
+- ✅ **Interactive CLI** - No flags to remember, just run `python3 sync.py`
 - ✅ Fetches meeting documents and transcripts from Granola API
+- ✅ **Auto-extracts customer names** from meeting titles and attendee domains
+- ✅ **Organizes by customer** - transcripts stored in customer folders
 - ✅ Handles OAuth token refresh (with rotation)
 - ✅ Tracks synced documents to avoid duplicates
-- ✅ Extracts readable text from transcripts and notes
+- ✅ Extracts readable text from transcripts AND notes
 - ✅ Sends to any webhook endpoint
 - ✅ Retry logic with exponential backoff
 - ✅ Dry-run mode for testing
@@ -31,6 +34,19 @@ Run the extraction script (requires Granola to be logged in on your Mac):
 ```
 
 This creates `config.json` with your credentials.
+
+### 3. Run the interactive CLI
+
+```bash
+python3 sync.py
+```
+
+That's it! The menu will guide you through:
+- Sync new transcripts only
+- Sync ALL transcripts (backlog)
+- Sync last 24 hours / 7 days
+- Preview what would sync
+- Set up automatic cron job
 
 **Manual extraction** (if script doesn't work):
 

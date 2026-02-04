@@ -11,11 +11,12 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -23,7 +24,7 @@ from urllib3.util.retry import Retry
 
 from token_manager import TokenManager
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # Configure logging
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> logging.Logger:
@@ -228,6 +229,79 @@ class GranolaSync:
         
         return extract_text(panel_content).strip()
     
+    @staticmethod
+    def extract_customer_from_title(title: str) -> Tuple[Optional[str], str]:
+        """
+        Try to extract customer/company name from meeting title.
+        
+        Common patterns:
+        - "Oasis + CustomerName: Topic"
+        - "CustomerName <> Oasis: Topic"  
+        - "CustomerName - Weekly Sync"
+        - "Call with CustomerName"
+        
+        Returns: (customer_name or None, meeting_type)
+        """
+        if not title:
+            return None, "internal"
+        
+        title = title.strip()
+        
+        # Pattern: "Company + Company: Topic" or "Company <> Company: Topic"
+        match = re.match(r'^(?:Oasis\s*[+<>]+\s*)?([A-Z][A-Za-z0-9\s&.-]+?)(?:\s*[+<>:]+\s*(?:Oasis)?|\s*[-:]\s)', title)
+        if match:
+            customer = match.group(1).strip()
+            # Filter out common non-customer words
+            if customer.lower() not in ['weekly', 'daily', 'monthly', 'team', 'internal', 'oasis', '1:1', 'standup']:
+                return customer, "external"
+        
+        # Pattern: "Call with Customer"
+        match = re.match(r'^(?:Call|Meeting|Sync|Chat)\s+with\s+([A-Z][A-Za-z0-9\s&.-]+)', title, re.IGNORECASE)
+        if match:
+            return match.group(1).strip(), "external"
+        
+        # Pattern: "Customer - Topic"
+        match = re.match(r'^([A-Z][A-Za-z0-9\s&]+?)\s*[-–]\s*', title)
+        if match:
+            customer = match.group(1).strip()
+            if len(customer) > 2 and customer.lower() not in ['the', 'our', 'my', 'weekly', 'daily']:
+                return customer, "external"
+        
+        return None, "internal"
+    
+    @staticmethod
+    def extract_customer_from_attendees(attendees: List[str]) -> Optional[str]:
+        """
+        Try to extract customer company from attendee email domains.
+        Excludes common personal/company domains.
+        """
+        if not attendees:
+            return None
+        
+        excluded_domains = {
+            'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com',
+            'oasis.security', 'oasis.com'  # Our own domain
+        }
+        
+        domains = []
+        for attendee in attendees:
+            if '@' in str(attendee):
+                domain = attendee.split('@')[-1].lower()
+                if domain not in excluded_domains:
+                    domains.append(domain)
+        
+        if domains:
+            # Return most common external domain
+            from collections import Counter
+            most_common = Counter(domains).most_common(1)
+            if most_common:
+                domain = most_common[0][0]
+                # Convert domain to company name (simple version)
+                company = domain.split('.')[0].title()
+                return company
+        
+        return None
+    
     def send_to_webhook(self, payload: Dict[str, Any]) -> bool:
         """Send payload to webhook endpoint"""
         try:
@@ -245,7 +319,7 @@ class GranolaSync:
             return False
     
     def sync(self, since_hours: int = 24, force_all: bool = False, 
-             dry_run: bool = False) -> Dict[str, int]:
+             dry_run: bool = False, dump_fields: bool = False) -> Dict[str, int]:
         """
         Main sync method - fetch documents and send to webhook
         
@@ -256,6 +330,14 @@ class GranolaSync:
         # Fetch documents
         documents = self.fetch_documents(since_hours=since_hours)
         stats["total"] = len(documents)
+        
+        # Dump fields mode - show all available fields
+        if dump_fields and documents:
+            self.logger.info("=== DOCUMENT FIELDS DUMP ===")
+            sample_doc = documents[0]
+            self.logger.info(f"Available fields: {list(sample_doc.keys())}")
+            print(json.dumps(sample_doc, indent=2, default=str))
+            return stats
         
         # Filter to new documents only (unless force_all)
         if force_all:
@@ -284,27 +366,68 @@ class GranolaSync:
             
             # Extract notes from panel content
             notes = ""
+            notes_raw = None
             last_panel = doc.get("last_viewed_panel", {})
             if last_panel:
                 content = last_panel.get("content", {})
                 notes = self.extract_notes(content)
+                notes_raw = content  # Include raw for structured processing
             
-            # Build payload
+            # Extract attendees
+            attendees = doc.get("attendees", [])
+            if isinstance(attendees, list):
+                attendees = [str(a) for a in attendees if a]
+            
+            # Extract customer/company info
+            customer_from_title, meeting_type = self.extract_customer_from_title(title)
+            customer_from_attendees = self.extract_customer_from_attendees(attendees)
+            
+            # Use title-extracted customer if available, otherwise try attendees
+            customer = customer_from_title or customer_from_attendees
+            
+            # Extract folder/workspace info if available
+            folder = doc.get("folder_name") or doc.get("workspace") or doc.get("folder") or None
+            
+            # Build comprehensive payload
             payload = {
                 "source": "granola",
                 "document_id": doc_id,
                 "title": title,
                 "created_at": created_at,
+                
+                # Transcript data
                 "transcript": transcript_text,
                 "transcript_segments": len(transcript_data.get("segments", [])) if transcript_data else 0,
+                "transcript_raw": transcript_data,  # Full transcript data for advanced processing
+                
+                # Notes data
                 "notes": notes,
-                "attendees": doc.get("attendees", []),
+                "notes_raw": notes_raw,  # ProseMirror format for structured extraction
+                
+                # Organization metadata
+                "customer": customer,
+                "meeting_type": meeting_type,  # "external" or "internal"
+                "folder": folder,
+                "attendees": attendees,
+                
+                # Additional metadata (include everything Granola provides)
+                "duration_seconds": doc.get("duration") or doc.get("duration_seconds"),
+                "recording_url": doc.get("recording_url"),
+                "calendar_event_id": doc.get("calendar_event_id"),
+                "updated_at": doc.get("updated_at"),
+                
+                # Sync metadata
                 "synced_at": datetime.utcnow().isoformat() + "Z"
             }
             
             if dry_run:
                 self.logger.info(f"[DRY RUN] Would send: {title}")
-                print(json.dumps(payload, indent=2, ensure_ascii=False))
+                self.logger.info(f"  Customer: {customer or '(none detected)'}")
+                self.logger.info(f"  Meeting type: {meeting_type}")
+                self.logger.info(f"  Attendees: {len(attendees)}")
+                self.logger.info(f"  Transcript segments: {payload['transcript_segments']}")
+                print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+                print("\n" + "="*60 + "\n")
                 stats["synced"] += 1
             else:
                 if self.send_to_webhook(payload):
@@ -329,6 +452,7 @@ Examples:
   %(prog)s --webhook https://n8n.example.com/webhook/granola
   %(prog)s --webhook https://n8n.example.com/webhook/granola --hours 48
   %(prog)s --webhook https://n8n.example.com/webhook/granola --all --dry-run
+  %(prog)s --webhook https://... --dump-fields  # See all available fields
 
 For more info: https://github.com/moneypenny-agent/granola-sync
         """
@@ -337,6 +461,7 @@ For more info: https://github.com/moneypenny-agent/granola-sync
     parser.add_argument("--hours", type=int, default=24, help="Fetch meetings from last N hours (default: 24)")
     parser.add_argument("--all", action="store_true", help="Sync all documents, not just new ones")
     parser.add_argument("--dry-run", action="store_true", help="Print payloads without sending")
+    parser.add_argument("--dump-fields", action="store_true", help="Show all fields from first document (debug)")
     parser.add_argument("--config", default="config.json", help="Path to config file (default: config.json)")
     parser.add_argument("--state", default="sync_state.json", help="Path to state file (default: sync_state.json)")
     parser.add_argument("--log", help="Log file path (optional)")
@@ -367,7 +492,8 @@ For more info: https://github.com/moneypenny-agent/granola-sync
     stats = sync.sync(
         since_hours=args.hours,
         force_all=args.all,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        dump_fields=args.dump_fields
     )
     
     # Print summary

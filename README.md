@@ -1,123 +1,187 @@
-# Granola Transcript Sync
+# Granola Sync 🥣
 
-Pull meeting transcripts from Granola and pipe them to Moneypenny via N8N.
+Sync meeting transcripts from [Granola](https://granola.ai) to external services via webhook.
 
-## Setup Steps
+Granola is an AI meeting assistant that captures transcripts and generates notes. This tool extracts those transcripts and sends them to your automation platform (N8N, Make, Zapier, etc.) for further processing.
 
-### Step 1: Extract Your Granola Token (One-Time)
+## Features
 
-On your Mac, with Granola logged in:
+- ✅ Fetches meeting documents and transcripts from Granola API
+- ✅ Handles OAuth token refresh (with rotation)
+- ✅ Tracks synced documents to avoid duplicates
+- ✅ Extracts readable text from transcripts and notes
+- ✅ Sends to any webhook endpoint
+- ✅ Retry logic with exponential backoff
+- ✅ Dry-run mode for testing
+
+## Quick Start
+
+### 1. Install dependencies
 
 ```bash
-# View the raw file
-cat ~/Library/Application\ Support/Granola/supabase.json
-
-# Or extract just the refresh token
-cat ~/Library/Application\ Support/Granola/supabase.json | jq -r '.workos_tokens | fromjson | .refresh_token'
-
-# Extract the client_id from the JWT
-cat ~/Library/Application\ Support/Granola/supabase.json | jq -r '.workos_tokens | fromjson | .access_token' | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.iss' | grep -oE 'client_[a-zA-Z0-9_]+'
+pip install -r requirements.txt
 ```
 
-You'll get:
-- `refresh_token`: Something like `22oWVolI9TRlthI2J5asHbfyx`
-- `client_id`: Something like `client_01ABC123...`
+### 2. Extract your Granola credentials
 
-### Step 2: Create config.json
+Run the extraction script (requires Granola to be logged in on your Mac):
 
+```bash
+./extract_token.sh
+```
+
+This creates `config.json` with your credentials.
+
+**Manual extraction** (if script doesn't work):
+
+```bash
+# Get the refresh token
+cat ~/Library/Application\ Support/Granola/supabase.json | \
+  jq -r '.workos_tokens | fromjson | .refresh_token'
+
+# Get the client_id from the JWT
+cat ~/Library/Application\ Support/Granola/supabase.json | \
+  jq -r '.workos_tokens | fromjson | .access_token' | \
+  cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.iss' | \
+  grep -oE 'client_[a-zA-Z0-9_]+'
+```
+
+Create `config.json`:
 ```json
 {
-  "refresh_token": "YOUR_REFRESH_TOKEN_HERE",
-  "client_id": "YOUR_CLIENT_ID_HERE"
+  "refresh_token": "YOUR_REFRESH_TOKEN",
+  "client_id": "client_01..."
 }
 ```
 
-### Step 3: Run the Sync Script
+### 3. Run the sync
 
 ```bash
-python3 granola_sync.py --webhook https://your-n8n-webhook-url
+python3 granola_sync.py --webhook https://your-webhook-url
 ```
 
-Or set up as cron (every 5 min to keep token alive):
+## Usage
+
+```
+usage: granola_sync.py [-h] --webhook WEBHOOK [--hours HOURS] [--all]
+                       [--dry-run] [--config CONFIG] [--state STATE]
+                       [--log LOG] [-v] [--version]
+
+Options:
+  --webhook URL    Webhook URL to send transcripts to (required)
+  --hours N        Fetch meetings from last N hours (default: 24)
+  --all            Sync all documents, not just new ones
+  --dry-run        Print payloads without sending
+  --config FILE    Path to config file (default: config.json)
+  --state FILE     Path to state file (default: sync_state.json)
+  --log FILE       Log file path (optional)
+  -v, --verbose    Enable debug output
+  --version        Show version
+```
+
+### Examples
+
 ```bash
-*/5 * * * * cd /path/to/granola-sync && python3 granola_sync.py --webhook https://your-n8n-webhook-url
+# Basic sync - last 24 hours, only new documents
+python3 granola_sync.py --webhook https://n8n.example.com/webhook/granola
+
+# Sync last 48 hours with verbose output
+python3 granola_sync.py --webhook https://... --hours 48 --verbose
+
+# Dry run to see what would be sent
+python3 granola_sync.py --webhook https://... --dry-run
+
+# Force re-sync all documents
+python3 granola_sync.py --webhook https://... --all
 ```
 
-## N8N Workflow Setup
+## Webhook Payload
 
-### Webhook Node (Trigger)
-1. Add a **Webhook** node
-2. HTTP Method: POST
-3. Path: `granola-transcript`
-4. Copy the webhook URL (you'll need this for the script)
-
-### HTTP Request Node (Send to Moneypenny)
-1. Add **HTTP Request** node
-2. Method: POST
-3. URL: `https://dash.universalexports.company/api/granola/ingest`
-4. Authentication: Header Auth
-5. Header Name: `Authorization`
-6. Header Value: `Bearer YOUR_DASHBOARD_TOKEN`
-7. Body Content Type: JSON
-8. Body: `{{ $json }}`
-
-### Workflow JSON (Import This)
+Each synced document sends a JSON payload like this:
 
 ```json
 {
-  "nodes": [
-    {
-      "name": "Granola Webhook",
-      "type": "n8n-nodes-base.webhook",
-      "position": [250, 300],
-      "webhookId": "granola-transcript",
-      "parameters": {
-        "httpMethod": "POST",
-        "path": "granola-transcript",
-        "responseMode": "onReceived",
-        "responseData": "allEntries"
-      }
-    },
-    {
-      "name": "Send to Moneypenny",
-      "type": "n8n-nodes-base.httpRequest",
-      "position": [500, 300],
-      "parameters": {
-        "url": "https://dash.universalexports.company/api/granola/ingest",
-        "method": "POST",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "={{ $json }}",
-              "value": ""
-            }
-          ]
-        },
-        "options": {}
-      }
-    }
-  ],
-  "connections": {
-    "Granola Webhook": {
-      "main": [
-        [
-          {
-            "node": "Send to Moneypenny",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    }
-  }
+  "source": "granola",
+  "document_id": "abc123...",
+  "title": "Weekly Standup",
+  "created_at": "2026-02-04T10:00:00.000Z",
+  "transcript": "[00:00] Alice: Good morning everyone...\n[00:15] Bob: Morning!...",
+  "transcript_segments": 42,
+  "notes": "Meeting notes extracted from Granola...",
+  "attendees": ["alice@example.com", "bob@example.com"],
+  "synced_at": "2026-02-04T15:30:00.000Z"
 }
+```
+
+## Automation Setup
+
+### N8N
+
+1. Create a **Webhook** node:
+   - HTTP Method: `POST`
+   - Path: `granola-transcript`
+   - Copy the webhook URL
+
+2. Add processing nodes (HTTP Request, Notion, Slack, etc.)
+
+3. Configure your cron or run manually
+
+### Cron Setup
+
+To run every 5 minutes (keeps token fresh):
+
+```bash
+# Edit crontab
+crontab -e
+
+# Add this line (adjust paths)
+*/5 * * * * cd /path/to/granola-sync && python3 granola_sync.py --webhook https://... >> /var/log/granola-sync.log 2>&1
 ```
 
 ## Files
 
-- `granola_sync.py` - Main sync script
-- `token_manager.py` - Token refresh logic
-- `config.json` - Your credentials (gitignored)
+| File | Purpose |
+|------|---------|
+| `granola_sync.py` | Main sync script |
+| `token_manager.py` | OAuth token handling |
+| `extract_token.sh` | Credential extraction helper |
+| `config.json` | Your credentials (gitignored) |
+| `sync_state.json` | Tracks synced documents (gitignored) |
+| `requirements.txt` | Python dependencies |
+
+## Token Rotation Warning ⚠️
+
+**WorkOS rotates refresh tokens on every use.** When you refresh your access token, you get a NEW refresh token, and the old one becomes invalid.
+
+This tool automatically saves the new refresh token to `config.json`. If you interrupt the script mid-refresh, your config may have a stale token. In that case, re-run `extract_token.sh` to get fresh credentials from the Granola app.
+
+## Troubleshooting
+
+### "Could not obtain valid token"
+
+1. Make sure Granola is logged in on your Mac
+2. Re-run `./extract_token.sh` to get fresh credentials
+3. Check that `config.json` has both `refresh_token` and `client_id`
+
+### "Token refresh failed: HTTP 401"
+
+Your refresh token is invalid. Re-extract from Granola:
+```bash
+./extract_token.sh
+```
+
+### "No transcript for document"
+
+Not all Granola documents have transcripts. If there was no audio recording, there's no transcript. The sync will still send the document metadata and notes.
+
+### Documents not syncing
+
+The script only syncs NEW documents by default. Use `--all` to re-sync everything, or delete `sync_state.json` to reset the sync state.
+
+## License
+
+MIT - Use freely, attribution appreciated.
+
+## Credits
+
+Built by [Moneypenny](https://github.com/moneypenny-agent) 🍸

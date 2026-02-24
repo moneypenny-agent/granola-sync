@@ -67,10 +67,11 @@ class GranolaSync:
     CLIENT_VERSION = "5.354.0"
     
     def __init__(self, token_manager: TokenManager, webhook_url: str, 
-                 state_file: str = "sync_state.json"):
+                 state_file: str = "sync_state.json", rate_limit_delay: float = 3.0):
         self.tm = token_manager
         self.webhook_url = webhook_url
         self.state_file = Path(state_file)
+        self.rate_limit_delay = rate_limit_delay
         self.session = create_session()
         self.logger = logging.getLogger(__name__)
         self.synced_ids: Set[str] = set()
@@ -442,6 +443,8 @@ class GranolaSync:
                 if self.send_to_webhook(payload):
                     self.synced_ids.add(doc_id)
                     stats["synced"] += 1
+                    # Rate limit: give N8N time to process before sending next
+                    time.sleep(self.rate_limit_delay)
                 else:
                     stats["failed"] += 1
         
@@ -475,6 +478,7 @@ For more info: https://github.com/moneypenny-agent/granola-sync
     parser.add_argument("--state", default="sync_state.json", help="Path to state file (default: sync_state.json)")
     parser.add_argument("--log", help="Log file path (optional)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose/debug output")
+    parser.add_argument("--delay", type=float, default=3.0, help="Seconds to wait between webhook sends (default: 3.0, use 0 to disable)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     
     args = parser.parse_args()
@@ -494,7 +498,8 @@ For more info: https://github.com/moneypenny-agent/granola-sync
     sync = GranolaSync(
         token_manager=tm,
         webhook_url=args.webhook,
-        state_file=args.state
+        state_file=args.state,
+        rate_limit_delay=args.delay
     )
     
     # Run sync

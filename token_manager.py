@@ -106,11 +106,57 @@ class TokenManager:
                 json.dump(config, f, indent=2)
             
             logger.debug("Config saved")
+            
+            # IMPORTANT: Write rotated tokens back to Granola's own data file
+            # so the desktop app doesn't get logged out when the refresh token rotates.
+            self._sync_tokens_to_granola_app()
+            
             return True
             
         except IOError as e:
             logger.error(f"Could not save config: {e}")
             return False
+    
+    def _sync_tokens_to_granola_app(self) -> None:
+        """
+        Write updated tokens back to Granola's supabase.json so the
+        desktop app doesn't get logged out after token rotation.
+        """
+        import os
+        granola_file = Path(os.path.expanduser(
+            "~/Library/Application Support/Granola/supabase.json"
+        ))
+        
+        if not granola_file.exists():
+            return  # Not on the machine with Granola installed, skip silently
+        
+        try:
+            with open(granola_file, 'r') as f:
+                granola_data = json.load(f)
+            
+            # Parse current workos_tokens (stored as a JSON string inside the JSON)
+            workos_str = granola_data.get('workos_tokens', '{}')
+            try:
+                workos_tokens = json.loads(workos_str) if isinstance(workos_str, str) else workos_str
+            except (json.JSONDecodeError, TypeError):
+                workos_tokens = {}
+            
+            # Update with our current tokens
+            workos_tokens['refresh_token'] = self.refresh_token
+            if self.access_token:
+                workos_tokens['access_token'] = self.access_token
+            
+            # Write back (preserving the string-within-JSON format Granola uses)
+            granola_data['workos_tokens'] = json.dumps(workos_tokens)
+            
+            with open(granola_file, 'w') as f:
+                json.dump(granola_data, f)
+            
+            logger.debug("Synced rotated tokens back to Granola app")
+            
+        except Exception as e:
+            # Non-fatal — script still works, just logs the issue
+            logger.debug(f"Could not sync tokens to Granola app: {e}")
     
     def is_token_expired(self) -> bool:
         """Check if access token is expired or about to expire"""
